@@ -1,0 +1,228 @@
+const vec3 VNULL = vec3(0);
+const vec3 LUM = vec3(0.299, 0.587, 0.114);
+const float DIV3 = 1 / 3;
+
+float log10 (const in float fVal) {
+	return log2(fVal) * log2(10);
+}
+
+void Gamma (inout float l) {
+	const float fSlope = 4.5;
+	const float fStart = 0.018;
+	const float fGamma = 0.9 / 2.2;
+	if (l > fStart) {
+		l = pow(1.099 * l, fGamma) - 0.099;
+	} else {
+		l = fSlope * l;
+	}
+}
+
+void Gamma () {
+	const float fSlope = 4.5;
+	const vec3 vStart = vec3(0.018);
+	const vec3 vGamma = vec3(0.9 / 2.2);
+	const vec3 vDark = step(vCol, vStart);
+	const vec3 vLite = 1 - vDark;
+	vCol = (vDark * fSlope * vCol) + (vLite * (pow(1.099 * vCol, vGamma) - 0.099));
+}
+
+const float A = 0.15;
+const float B = 0.50;
+const float C = 0.10;
+const float D = 0.20;
+const float E = 0.02;
+const float F = 0.30;
+
+void FilmicToneAlu (const in float fAvgLum) {
+	const float fWhitePoint = 1.7;
+	const float fBlackPoint = 0.5;
+	vCol = max(VNULL, vCol - 0.004);
+	vCol = (vCol * ((6.2 * vCol) + fBlackPoint)) / (vCol * ((6.2 * vCol) + fWhitePoint) + 0.06);
+}
+
+vec3 FilmicTone (const in vec3 vColor) {
+	return ((vColor * ((A * vColor) + (C * B)) + (D * E)) / (vColor * ((A * vColor) + B) + (D * F))) - (E / F);
+}
+
+float FilmicTone (const in float fColor) {
+	return ((fColor * ((A * fColor) + (C * B)) + (D * E)) / (fColor * ((A * fColor) + B) + (D * F))) - (E / F);
+}
+
+void FilmicTonemap () {
+	vCol *= 16;
+	const float whiteScale = FilmicTone(11.2);
+	vCol.rgb = FilmicTone(2 * vCol.rgb) / whiteScale;
+}
+
+const vec3 BLOOM_POWER = vec3(1.66);
+const float BLOOM_OFF1 = 1.5;
+const float BLOOM_OFF2 = 2.5;
+
+void Hdr () {
+	const vec2 vTc = vPos;
+	vec3 bloomSum1 = vec3(0);
+	vec3 bloomSum2 = vec3(0);
+	const float radius1 = 0.793;
+	/*
+	bloomSum1 += texture(uTex, vTc + vec2(-BLOOM_OFF1, -BLOOM_OFF1) * radius1).rgb;
+	bloomSum1 += texture(uTex, vTc + vec2(-BLOOM_OFF2, 0) * radius1).rgb;
+	bloomSum1 += texture(uTex, vTc + vec2(-BLOOM_OFF1, BLOOM_OFF1) * radius1).rgb;
+	bloomSum1 += texture(uTex, vTc + vec2(0, BLOOM_OFF2) * radius1).rgb;
+	bloomSum1 += texture(uTex, vTc + vec2(BLOOM_OFF1, BLOOM_OFF1) * radius1).rgb;
+	bloomSum1 += texture(uTex, vTc + vec2(BLOOM_OFF2, 0) * radius1).rgb;
+	bloomSum1 += texture(uTex, vTc + vec2(BLOOM_OFF1, -BLOOM_OFF1) * radius1).rgb;
+	bloomSum1 += texture(uTex, vTc + vec2(0, -BLOOM_OFF2) * radius1).rgb;
+	*/
+	const float radius2 = 0.915;
+	/*
+	bloomSum2 += texture(uTex, vTc + vec2(-BLOOM_OFF1, -BLOOM_OFF1) * radius2).rgb;
+	bloomSum2 += texture(uTex, vTc + vec2(-BLOOM_OFF2, 0) * radius2).rgb;
+	bloomSum2 += texture(uTex, vTc + vec2(-BLOOM_OFF1, BLOOM_OFF1) * radius2).rgb;
+	bloomSum2 += texture(uTex, vTc + vec2(0, BLOOM_OFF2) * radius2).rgb;
+	bloomSum2 += texture(uTex, vTc + vec2(BLOOM_OFF1, BLOOM_OFF1) * radius2).rgb;
+	bloomSum2 += texture(uTex, vTc + vec2(BLOOM_OFF2, 0) * radius2).rgb;
+	bloomSum2 += texture(uTex, vTc + vec2(BLOOM_OFF1, -BLOOM_OFF1) * radius2).rgb;
+	bloomSum2 += texture(uTex, vTc + vec2(0, -BLOOM_OFF2) * radius2).rgb;
+	*/
+	const vec3 bloom = (vCol.rgb + ((bloomSum2 * 0.01) - (bloomSum1 * 0.005))) * (radius2 - radius1);
+	vCol.rgb = bloom + (pow(bloom + vCol.rgb, BLOOM_POWER) * 0.95);
+}
+
+void Cartoon () {
+	const float texStep = 0.004;
+	const float fLum1 = texture(uTex, vPos + vec2(texStep, texStep)).a;
+	const float fLum0 = texture(uTex, vPos + vec2(-texStep, -texStep)).a;
+	const float fLum3 = texture(uTex, vPos + vec2(texStep, -texStep)).a;
+	const float fLum2 = texture(uTex, vPos + vec2(-texStep, texStep)).a;
+	const float edge = ((fLum1 - fLum0) * (fLum1 - fLum0)) + ((fLum3 - fLum2) * (fLum3 - fLum2));
+	vCol.rgb = max(vCol.rgb - (vec3(edge) * 12), VNULL);
+}
+
+void Colorful () {
+	vCol.rgb = vCol.rgb * step(0.4, vCol.rgb);
+}
+
+void Grayscale () {
+	vCol.rgb = vec3((vCol.r + vCol.g + vCol.b) * DIV3);
+}
+
+const vec3 RED_FILTER = vec3(1, 0, 0);
+const vec3 BLUE_FILTER = vec3(0, 0, 1);
+const vec3 GREEN_FILTER = vec3(0, 1, 0);
+const vec3 ORANGE_FILTER = vec3(0.99, 0.263, 0);
+const vec3 CYAN_FILTER = vec3(0, 1, 1);
+const vec3 MAGENTA_FILTER = vec3(1, 0, 1);
+const vec3 YELLOW_FILTER = vec3(1, 1, 0);
+const float TC_AMOUNT = 0.9;
+
+void Technicolor () {
+	const vec3 filtGreen = vCol.rgb * GREEN_FILTER;
+	const vec3 filtRed = vCol.rgb * ORANGE_FILTER;
+	const vec3 filtBlue = vCol.rgb * MAGENTA_FILTER;
+	const float negRed = (filtRed.r + filtRed.g + filtRed.b) * DIV3;
+	const float negGreen = (filtGreen.r + filtGreen.g + filtGreen.b) * DIV3;
+	const float negBlue = (filtBlue.r + filtBlue.g + filtBlue.b) * DIV3;
+	const vec3 red = negRed + CYAN_FILTER;
+	const vec3 green = negGreen + MAGENTA_FILTER;
+	const vec3 blue = negBlue + YELLOW_FILTER;
+	vCol.rgb = mix(vCol.rgb, red * green * blue, TC_AMOUNT);
+}
+
+const vec3 DEFOG = vec3(0);
+const vec3 FOG_COLOR = vec3(0);
+const float EXPOSURE = 1;
+const float BLUE_SHIFT = 0.33;
+const vec2 VIG_CENTER = vec2(0.5, 0.5);
+const float VIG_RADIUS = 0.88;
+const float VIG_AMOUNT = -0.75;
+const float SATURATION = 0;
+const vec3 BLEACH_OPACITY = vec3(0);
+
+void Tonemap () {
+	vCol.rgb = max(VNULL, vCol.rgb - (DEFOG * FOG_COLOR)) * EXPOSURE;
+	vCol.rgb = mix(vCol.rgb, vCol.rgb * vec3(1.05, 0.97, 1.27), BLUE_SHIFT);
+	const vec3 vBleach = vCol.rgb * BLEACH_OPACITY;
+	vCol.rgb += (((1 - vBleach) * vBleach * mix(2 * vCol.rgb * vCol.a, 1 - (2 * (1 - vCol.a) * (1 - vCol.rgb)), min(1, max(0, 10 * (vCol.a - 0.45))))) + (VIG_AMOUNT * pow(length(vPos - VIG_CENTER) / VIG_RADIUS, 4)));
+	const vec3 difCol = vCol.rgb - ((vCol.r + vCol.g + vCol.b) * DIV3);
+	vCol.rgb = (vCol.rgb + difCol *+ SATURATION) / (1 + (difCol * SATURATION));
+}
+
+void Bright1 (inout vec3 vCol) {
+	vCol.rgb = max(VNULL, vCol.rgb - 0.5);
+}
+
+void Bright2 (inout vec4 vCol) {
+	const float midGray = float(vCol.r + vCol.g + vCol.b) * DIV3;
+	const float whiteCutoff = 0.9;
+	vCol.rgb *= midGray / (vCol.a * DIV3);
+	vCol.rgb *= (1 + (vCol.rgb / (whiteCutoff * whiteCutoff)));
+	vCol.rgb -= 5;
+	vCol.rgb = max(vCol.rgb, 0);
+	vCol.rgb /= (10 + vCol.rgb);
+}
+
+vec3 Bright3 (const in vec2 vTex) {
+	const float fThreshold = 0.425;
+	const float fOffset = 0.05;
+	const vec3 vCol = max(texture(uTex, vTex).rgb - fThreshold, 0);
+	return vCol / (vCol + fOffset);
+}
+
+void Bright3 (inout vec3 vCol) {
+	const float fThreshold = 0.5;
+	const float fOffset = 0.5;
+	vCol = max(vCol - fThreshold, 0);
+	vCol = vCol / (vCol + fOffset);
+}
+
+void Bloom2 (const in vec3 vCombine) {
+	const float scale = 0.25;
+	vec3 vCol1 = textureLod(uTex, vPos, 1).rgb;
+	Bright1(vCol1);
+	vec3 vCol2 = textureLod(uTex, vPos, 2).rgb;
+	Bright1(vCol2);
+	vec3 vCol3 = textureLod(uTex, vPos, 3).rgb;
+	Bright1(vCol3);
+	vec3 vCol4 = textureLod(uTex, vPos, 4).rgb;
+	Bright1(vCol4);
+	vCol.rgb = vCombine + (vCol1.rgb * 0.25) + (vCol2.rgb * 0.25) + (vCol3.rgb * 0.25) + (vCol4.rgb * 0.25);
+}
+
+vec3 Bloom3 () {
+	const float fKernel = 2;
+	const float fMaxDist = fKernel * 2;
+	const float fMaxDistInv = 1 / fMaxDist;
+	const float fAmplify = fMaxDist * 4;
+	const vec2 vBlur1 = vec2(0.003125, 0.00555555); // vec2(clamp(fBias, -fClamp, fClamp));
+	float fDist;
+	float fLum = 0;
+	vec3 col = vec3(0);
+	vec4 vBright;
+	for (float x = -fKernel; x <= fKernel; x++) {
+		for (float y = -fKernel; y <= fKernel; y++) {
+			fDist = abs(x) + abs(y);
+			vBright = texture(uTex, vPos + vec2(vBlur1.x * x, vBlur1.y * y));
+			// fLum += vBright.a;
+			Bright3(vBright.rgb);
+			col += (vBright.rgb * (1 - (fDist * fMaxDistInv)));
+		}
+	}
+	col.rgb /= (fAmplify); // (((fKernel + fKernel) - 0) * ((fKernel + fKernel) - 0));
+	return col;
+}
+
+void main (void) {
+	vCol = texture(uTex, vPos);
+	vCol.a = 1;
+	// Hdr();
+	// Tonemap();
+	// if (vPos.x > 0.75) {
+	//	vCol.rgb += Bloom3();
+	/*
+	} else if (vPos.x > 0.5) {
+		vCol.rgb = Bloom3();
+	} else if (vPos.x > 0.25) {
+		Bright3(vCol.rgb);
+	}
+	*/
+}

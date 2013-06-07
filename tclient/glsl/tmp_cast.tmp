@@ -1,0 +1,301 @@
+in vec3 vRayDir;
+
+uniform vec3 uCamLook;
+uniform vec3 uCamPos;
+uniform vec2 uScreen;
+uniform float uTime;
+
+out vec3 vFragColor;
+
+const float EPSILON = 0.0000001; // 1920928955078125;
+
+struct THit {
+	float fDistance;
+	float fObjectId;
+	vec3 vPos;
+};
+
+struct TMaterial {
+	vec3 cAlbedo;
+	float fR0;
+	float fSmoothness;
+};
+
+struct TRay {
+	vec3 vOrigin;
+	vec3 vDir;
+};
+
+float MaxComp (const in vec3 vec) {
+	return max(vec.x, max(vec.y, vec.z));
+}
+
+float BumpyFloorHeight (const in vec3 vPos) {
+	return 0.125; // cos(uTime) * ((sin((vPos.x) * 0.75) + sin(vPos.z * 1.25)) * 0.175 + 0.175);
+}
+
+vec2 DistCombineUnion (const in vec2 v1, const in vec2 v2) {
+	return mix(v1, v2, step(v2.x, v1.x));
+}
+
+vec2 DistCombineIntersect (const in vec2 v1, const in vec2 v2) {
+	return mix(v2, v1, step(v2.x, v1.x));
+}
+
+vec2 DistCombineSubstract (const in vec2 v1, const in vec2 v2) {
+	return DistCombineIntersect(v1, vec2(-v2.x, v2.y));
+}
+
+float DistanceBox (const in vec3 vPos, const in vec3 vBoxSize) {
+	const vec3 di = abs(vPos) - vBoxSize;
+	return min(MaxComp(di), length(max(di, 0)));
+}
+
+float DistanceSphere (const in vec3 vPos, const in float fSphereRadius) {
+	return length(vPos) - fSphereRadius;
+}
+
+float DistancePlane (const in vec3 vPos, const in vec3 vPlaneNormal, const in float fPlaneDist) {
+	return dot(vPos, vPlaneNormal) + fPlaneDist;
+}
+
+float DistanceBumpyFloor (const in vec3 vPos, const in float fHeight) {
+	return vPos.y - fHeight + BumpyFloorHeight(vPos);
+}
+
+vec3 DomainRepeat (const in vec3 vPos, const in vec3 vRepeat) {
+	return mod(vPos, vRepeat) - (0.5 * vRepeat);
+}
+
+vec2 DistanceScene (const in vec3 vPos) {
+	const vec2 vDistPlane1 = vec2(DistanceBumpyFloor(vPos, -1), 1);
+
+//	vec3 vSpherePos = vec3(3, -1, 0.5);
+	// vSpherePos.y -= BumpyFloorHeight(vSpherePos);
+//	vec3 domain = DomainRepeat(vPos, vec3(48, 2, 48));
+	// domain.xz -= vSpherePos.xz;
+	const vec2 vDistSphere = vec2(DistanceSphere(vPos - vec3(1, 0, 4), 0.6), 2);
+
+/*	domain = DomainRepeat(vPos, vec3(48, 4, 48));
+	vSpherePos = vec3(-3, -1, EPSILON);
+	vSpherePos.y -= BumpyFloorHeight(vSpherePos);
+*/
+	const vec2 vDistBox = vec2(DistanceBox(vPos - vec3(4, 0, 6), vec3(1.2)), 3);
+
+	vec2 vResult = DistCombineUnion(vDistSphere, vDistBox);
+	vResult = DistCombineUnion(vDistPlane1, vResult);
+
+	return vResult;
+}
+
+TMaterial ObjectMaterial (const in float fObjId, const in vec3 vPos) {
+	TMaterial mat;
+	mat.cAlbedo = vec3(0.99, 0.99, 0.99);
+ 	if(fObjId == 1) {
+		mat.fSmoothness = 0.99;
+		mat.fR0 = 0.4;
+		mat.cAlbedo = vec3(sin(uTime), 0.23, 0.05);
+	} else if (fObjId == 2) {
+		mat.fSmoothness = 0.66;
+		mat.fR0 = 0.125;
+		mat.cAlbedo = vec3(2, 0.66, EPSILON);
+	} else if (fObjId == 3) {
+		mat.fSmoothness = 0.85;
+		mat.fR0 = 0.2;
+		mat.cAlbedo = vec3(EPSILON, 0.15, 0.45);
+	}
+	return mat;
+}
+
+vec3 NormalTetra (const in vec3 vPos) {
+	const float fDelta = 0.0001;
+	const vec3 vOffset1 = vec3( fDelta, -fDelta, -fDelta);
+	const vec3 vOffset2 = vec3(-fDelta, -fDelta,  fDelta);
+	const vec3 vOffset3 = vec3(-fDelta,  fDelta, -fDelta);
+	const vec3 vOffset4 = vec3( fDelta,  fDelta,  fDelta);
+	const float f1 = DistanceScene(vPos + vOffset1).x;
+	const float f2 = DistanceScene(vPos + vOffset2).x;
+	const float f3 = DistanceScene(vPos + vOffset3).x;
+	const float f4 = DistanceScene(vPos + vOffset4).x;
+	return normalize((vOffset1 * f1) + (vOffset2 * f2) + (vOffset3 * f3) + (vOffset4 * f4));
+}
+
+vec3 NormalSimple (const in vec3 vHitPos) {
+	const float fDelta = 0.0001;
+	const float fDx = DistanceScene(vHitPos + vec3(fDelta, 0, 0)).x - DistanceScene(vHitPos + vec3(-fDelta, 0, 0)).x;
+	const float fDy = DistanceScene(vHitPos + vec3(0, fDelta, 0)).x - DistanceScene(vHitPos + vec3(0, -fDelta, 0)).x;
+	const float fDz = DistanceScene(vHitPos + vec3(0, 0, fDelta)).x - DistanceScene(vHitPos + vec3(0, 0, -fDelta)).x;
+	return normalize(vec3(fDx, fDy, fDz));
+}
+
+void Raymarch (const in TRay ray, out THit hitInfo) {
+	const float fMaxDist = 60;
+	const float fNearLimit = 0.01;
+	float fDelta = 0.01;
+
+	hitInfo.fDistance = 0;
+	hitInfo.fObjectId = 0;
+
+	for (int i = 0; i < 256; i++) {
+		hitInfo.vPos = ray.vOrigin + (ray.vDir * (hitInfo.fDistance + fDelta));
+		vec2 vSceneDist = DistanceScene(hitInfo.vPos);
+		hitInfo.fObjectId = vSceneDist.y;
+		hitInfo.fDistance = min(hitInfo.fDistance + vSceneDist.x, fMaxDist);
+		fDelta = 0.1 * hitInfo.fDistance;
+		if ((vSceneDist.x <= fNearLimit) || (hitInfo.fDistance >= fMaxDist))
+			break;
+	}
+	hitInfo.fObjectId *= 1 - step(fMaxDist, hitInfo.fDistance); // if (hitInfo.fDistance > fMaxDist) { hitInfo.fObjectId = 0; }
+}
+
+const vec3 cSkyColor = vec3(0.55, 0.65, 0.75); // vec3(0.05, 0.15, 0.25); // vec3(0.33, 0.66, 0.99)
+
+vec3 SkyGradient (const in vec3 vDir) {
+	return cSkyColor;
+	float fBlend = abs(vDir.y) * 0.5 + 0.5;
+	return mix(cSkyColor, cSkyColor, fBlend);
+}
+	
+float Schlick (const in vec3 vNormal, const in vec3 vView, const in float fR0, const in float fSmoothFactor) {
+	float fDot = dot(vNormal, -vView);
+	fDot = min(max((1 - fDot), 0), 1);
+	return fR0 + ((1 - fR0) * fDot * fDot * fDot * fDot * fDot * fSmoothFactor);
+}
+
+vec3 SunPosition () {
+	return vec3(24 + (sin(uTime) * 2.5), 2 + cos(uTime), 24 + (cos(uTime) * 2.5));
+}
+
+vec3 SunColor () {
+	return vec3(5);
+}
+ 
+float DiffuseIntensity (const in vec3 vLightDir, const in vec3 vNormal) {
+	return max(EPSILON, dot(vLightDir, vNormal));
+}
+
+float BlinnPhongIntensity (const in TRay ray, const in TMaterial mat, const in vec3 vLightDir, const in vec3 vNormal) {
+	const vec3 vHalf = normalize(vLightDir - ray.vDir);
+	const float fDot = max(0, dot(vHalf, vNormal));
+	const float fSpecPower = exp2(4 + (6 * mat.fSmoothness));
+	const float fSpecIntensity = (fSpecPower + 2) * 0.125;
+	return pow(fDot, fSpecPower) * fSpecIntensity;
+}
+
+vec3 AmbientLight (const in vec3 vNormal) {
+	return vec3(1); // SkyGradient(vNormal) * 0.5;
+}
+
+float AmbientOcclusion (const in TRay ray, const in THit hitInfo, const in vec3 vNormal) {
+	const vec3 vPos = hitInfo.vPos;
+	vec2 vSceneDist;
+	float fAmbientOcclusion = 1;
+	for (float fDist = 0.1; fDist < 0.1; fDist += 0.1) {
+		vSceneDist = DistanceScene(vPos + (vNormal * fDist));
+		fAmbientOcclusion *= (1 - max(0, (fDist - vSceneDist.x) * 0.08 / fDist));
+	}
+	return fAmbientOcclusion;
+}
+
+void Atmosphere(inout vec3 cScene, const in TRay ray, const in THit hitInfo) {
+	// glare from light (a bit hacky - use length of closest approach from ray to light)
+/*
+	const vec3 vToLight = SunPosition() - ray.vOrigin;
+	float fDot = dot(vToLight, ray.vDir);
+	fDot = clamp(fDot, 0, hitInfo.fDistance);
+
+	const vec3 vClosestPoint = ray.vOrigin + (ray.vDir * fDot);
+	const float fDist = length(vClosestPoint - SunPosition());
+	cScene += SunColor() * 0.01 / (fDist * fDist);
+*/
+
+	// fog
+/*
+	const float fFogDensity = 0.0075;
+	const float fFogAmount = exp(-fFogDensity * hitInfo.fDistance);
+	const vec3 cFog = SkyGradient(ray.vDir);
+	cScene = mix(cFog, cScene, fFogAmount);
+*/
+}
+
+float Shadow (const in vec3 vRayOrigin, const in vec3 vRayDir, const in float mint, const in float maxt) {
+	vec2 d;
+	float sf = 1;
+	// float chk = 0;
+	float t = mint;
+	for (int i = 0; i < 0; i++) {
+		d = DistanceScene(vRayOrigin + (vRayDir * t));
+		// chk = step(t, maxt) * step(0.5, d.y) * step(d.x, maxt);
+		if ((sf == 0) || (maxt < t) || (d.y < 0.5) || (maxt < d.x)) {
+			break;
+		}
+		sf = min(sf, 16 * step(0.001, d.x) * d.x / t);
+		t += d.x;
+	}
+	return sf;
+}
+
+vec3 LightObject(const in TRay ray, const in THit hitInfo, const in vec3 vNormal, const in vec3 cReflection) {
+/*
+	const vec3 vLightPos = SunPosition();
+	const vec3 vToLight = vLightPos - hitInfo.vPos;
+	const vec3 vLightDir = normalize(vToLight);
+	const float fLightDistance = length(vToLight);
+
+	const float fAttenuation = 1 / (fLightDistance * fLightDistance);
+	const float fShadowBias = 0.1;
+	const float fShadowFactor = Shadow(hitInfo.vPos, vLightDir, fShadowBias, fLightDistance); // Shadow(hitInfo.vPos + (vLightDir * fShadowBias), vLightDir, fLightDistance - fShadowBias);
+	const vec3 vIncidentLight = SunColor() * fShadowFactor * fAttenuation;
+
+	const vec3 vDiffuseLight = vIncidentLight * DiffuseIntensity(vLightDir, vNormal);
+	const float fAmbientOcclusion = AmbientOcclusion(ray, hitInfo, vNormal);
+	const vec3 vAmbientLight = fAmbientOcclusion * AmbientLight(vNormal);
+*/
+	const TMaterial mat = ObjectMaterial(hitInfo.fObjectId, hitInfo.vPos);
+	const vec3 vDiffuseReflection = mat.cAlbedo; // * (vDiffuseLight + vAmbientLight);
+/*
+	const vec3 vSpecularReflection = (cReflection * fAmbientOcclusion) + (vIncidentLight * BlinnPhongIntensity(ray, mat, vLightDir, vNormal));
+	const float fFresnel = Schlick(vNormal, ray.vDir, mat.fR0, (mat.fSmoothness * 0.9) + 0.1);
+	return mix(vDiffuseReflection, vSpecularReflection, fFresnel);
+*/
+	return vDiffuseReflection;
+}
+
+vec3 SceneColorNoReflection (const in TRay ray) {
+	THit hitInfo;
+	Raymarch(ray, hitInfo);
+	vec3 cScene;
+//	if (hitInfo.fObjectId < 0.5) {
+//		cScene = SkyGradient(ray.vDir);
+//	} else {
+//		const vec3 vNormal = NormalTetra(hitInfo.vPos);
+//		const vec3 cReflection = SkyGradient(reflect(ray.vDir, vNormal));
+		cScene = LightObject(ray, hitInfo, vec3(1), vec3(1)/*crefl*/);
+//	}
+//	Atmosphere(cScene, ray, hitInfo);
+	return cScene;
+}
+
+vec3 SceneColor (const in TRay ray) {
+	THit hitInfo;
+	Raymarch(ray, hitInfo);
+	vec3 cScene;
+	if (hitInfo.fObjectId < 0.5) {
+		cScene = SkyGradient(ray.vDir);
+	} else {
+		const vec3 vNormal = NormalTetra(hitInfo.vPos);
+		const float fSeparation = 0.05;
+		TRay reflectRay;
+		reflectRay.vDir = reflect(ray.vDir, vNormal);
+		reflectRay.vOrigin = hitInfo.vPos + (reflectRay.vDir * fSeparation);
+		const vec3 cReflection = SceneColorNoReflection(reflectRay);
+		cScene = LightObject(ray, hitInfo, vNormal, cReflection);
+	}
+	Atmosphere(cScene, ray, hitInfo);
+	return cScene;
+}
+
+void main (void) {
+	const TRay ray = TRay(uCamPos, normalize(vRayDir));
+	vFragColor = SceneColorNoReflection(ray);
+}

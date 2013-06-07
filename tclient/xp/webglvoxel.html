@@ -1,0 +1,627 @@
+<html>
+<head>
+<title>WebGL Voxel</title>
+<script type="text/javascript" src="../jquery.js"></script>
+<script language="javascript" src="../Vector.js"></script>
+<script id="vshader" type="x-shader/x-vertex">
+	attribute vec3 aVertexPosition;
+	attribute vec2 aTextureCoord;
+
+       varying vec2 texCoord;
+
+	uniform mat4 uMVMatrix;
+	uniform mat4 uPMatrix;
+
+	void main()
+	{
+		gl_Position = uPMatrix * uMVMatrix * vec4(aVertexPosition, 1.0);
+		texCoord = aTextureCoord;
+	}
+</script>
+
+<script id="fshader" type="x-shader/x-fragment">
+	#ifdef GL_ES
+	precision highp float;
+	#endif
+
+	varying vec2 texCoord;
+
+	uniform sampler2D tileTextures;
+    	//input image1 voxelData;
+
+	uniform mat3 cameraRotation;
+	uniform vec3 cameraCenter;
+	uniform float focalDistance;
+	uniform float voxelSize;
+	uniform vec2 atlasTextureSize;
+	uniform vec2 textureSize;
+	uniform vec2 textureColumnsRows;
+	uniform float depthmap;
+
+	const ivec3 minBoundary = ivec3(-1, -1, -1);
+	const ivec3 maxBoundary = ivec3(10 + 50, 10 + 0, 10 + 0);
+
+	void main()
+	{
+		//gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0);
+		([0,w,h]/[2,2,2]) - 
+		vec3 rayPosition = ((vec3(0.0, 640.0, 480.0) / 2.0 - vec3(0.0, texCoord.x, texCoord.y)) / vec3(1.0, 640.0, 640.0)) * vec3(0.0, 0.2, 0.2);
+		vec3 rayDirection = cameraRotation * normalize(rayPosition - vec3(-focalDistance, 0.0, 0.0));
+		rayPosition = cameraRotation * rayPosition;
+		rayPosition += cameraCenter;
+		ivec3 voxel = ivec3(rayPosition / voxelSize);
+		ivec3 step = ivec3(sign(rayDirection));
+
+		vec3 offsetTemp = rayPosition - floor(rayPosition / voxelSize) * voxelSize;
+		vec3 offsetFromAxis = vec3(step.x == 1 ? voxelSize - offsetTemp.x : offsetTemp.x,
+		                           step.y == 1 ? voxelSize - offsetTemp.y : offsetTemp.y,
+		                           step.z == 1 ? voxelSize - offsetTemp.z : offsetTemp.z);
+
+		if(all(notEqual(rayDirection, vec3(0.0, 0.0, 0.0))))
+		{
+			vec3 tMax = offsetFromAxis / abs(rayDirection);
+
+			vec3 tDelta = voxelSize / abs(rayDirection);
+
+			ivec3 boundary = ivec3(step.x == -1 ? minBoundary.x : maxBoundary.x,
+			                       step.y == -1 ? minBoundary.y : maxBoundary.y,
+			                       step.z == -1 ? minBoundary.z : maxBoundary.z);
+			int lastCrossed = 0; // 0 = x, 1 = y, 2 = z
+
+			for(int i = 0; i < 1000; ++i)
+			{
+				if (tMax.x < tMax.y)
+				{
+					if(tMax.x < tMax.z)
+					{
+						lastCrossed = 0;
+						voxel.x += step.x;
+						if (voxel.x == boundary.x)
+						{
+							break;
+						}
+						tMax.x += tDelta.x;
+					}
+					else
+					{
+						lastCrossed = 2;
+						voxel.z += step.z;
+						if (voxel.z == boundary.z)
+						{
+							break;
+						}
+						tMax.z += tDelta.z;
+					}
+				}
+				else
+				{
+					if (tMax.y < tMax.z)
+					{
+						lastCrossed = 1;
+						voxel.y += step.y;
+						if (voxel.y == boundary.y)
+						{
+							break;
+						}
+						tMax.y += tDelta.y;
+					}
+					else
+					{
+						lastCrossed = 2;
+						voxel.z += step.z;
+						if (voxel.z == boundary.z)
+						{
+							break;
+						}
+						tMax.z += tDelta.z;
+					}
+				}
+				
+				bvec3 voxelEqualToZero = equal(voxel, ivec3(0, 0, 0));
+				bvec3 voxelEqualToNine = equal(voxel, ivec3(9, 9, 9));
+				//if ((any(voxelEqualToZero) || any(voxelEqualToNine)))
+				if ((any(voxelEqualToZero) || any(voxelEqualToNine)) && mod(float(voxel.x + voxel.y + voxel.z), 2.0) == 1.0 || any(equal(voxel, ivec3(0))))
+				{
+					int lastCrossedVoxel = lastCrossed == 0 ? voxel.x : (lastCrossed == 1 ? voxel.y : voxel.z);
+					int lastCrossedStep = lastCrossed == 0 ? step.x : (lastCrossed == 1 ? step.y : step.z);
+					float lastCrossedRayPosition = lastCrossed == 0 ? rayPosition.x : (lastCrossed == 1 ? rayPosition.y : rayPosition.z);
+					float lastCrossedRayDirection = lastCrossed == 0 ? rayDirection.x : (lastCrossed == 1 ? rayDirection.y : rayDirection.z);
+					float offset = float(lastCrossedVoxel + (lastCrossedStep == 1 ? 0 : 1)) * voxelSize - lastCrossedRayPosition;
+					// I wish I could just do this:
+					//float offset = float(voxel[lastCrossed] + (step[lastCrossed] == 1 ? 0 : 1)) * voxelSize - rayPosition[lastCrossed];
+					float depth = offset / lastCrossedRayDirection;
+					
+					if (depthmap == 1.0)
+					{
+						gl_FragColor = vec4(1.0 - (depth) / 20.0, 1.0 - (depth) / 20.0, 1.0 - (depth) / 20.0, 1);
+						break;
+					}
+
+					vec2 offsetZeroToOne;
+					if (lastCrossed == 0)
+					{
+						if (step.x == 1)
+						{
+							float textureIndex = 3.0;
+							offsetZeroToOne = (mod(rayPosition + rayDirection * depth, voxelSize) / voxelSize).yz;
+							offsetZeroToOne.x = 1.0 - offsetZeroToOne.x;
+							vec2 textureCoord = offsetZeroToOne * vec2(0.125, 0.125) + vec2(0.125 * mod(textureIndex, 3.0), 0.125 * floor(textureIndex / 3.0));
+							gl_FragColor = texture2D(tileTextures, textureCoord);
+						}
+						else
+						{
+							float textureIndex = 3.0;
+							offsetZeroToOne = (mod(rayPosition + rayDirection * depth, voxelSize) / voxelSize).yz;
+							vec2 textureCoord = offsetZeroToOne * vec2(0.125, 0.125) + vec2(0.125 * mod(textureIndex, 3.0), 0.125 * floor(textureIndex / 3.0));
+							gl_FragColor = texture2D(tileTextures, textureCoord);
+						}
+					}
+					else if (lastCrossed == 1)
+					{
+						if (step.y == 1)
+						{
+							float textureIndex = 3.0;
+							offsetZeroToOne = (mod(rayPosition + rayDirection * depth, voxelSize) / voxelSize).xz;
+							vec2 textureCoord = offsetZeroToOne * vec2(0.125, 0.125) + vec2(0.125 * mod(textureIndex, 3.0), 0.125 * floor(textureIndex / 3.0));
+							gl_FragColor = texture2D(tileTextures, textureCoord);
+						}
+						else
+						{
+							float textureIndex = 3.0;
+							offsetZeroToOne = (mod(rayPosition + rayDirection * depth, voxelSize) / voxelSize).xz;
+							offsetZeroToOne.x = 1.0 - offsetZeroToOne.x;
+							vec2 textureCoord = offsetZeroToOne * vec2(0.125, 0.125) + vec2(0.125 * mod(textureIndex, 3.0), 0.125 * floor(textureIndex / 3.0));
+							gl_FragColor = texture2D(tileTextures, textureCoord);
+						}
+					}
+					else
+					{
+						if (step.z == 1)
+						{
+							float textureIndex = 2.0;
+							offsetZeroToOne = (mod(rayPosition + rayDirection * depth, voxelSize) / voxelSize).xy;
+							offsetZeroToOne.y = 1.0 - offsetZeroToOne.y;
+							vec2 textureCoord = offsetZeroToOne * vec2(0.125, 0.125) + vec2(0.125 * mod(textureIndex, 3.0), 0.125 * floor(textureIndex / 3.0));
+							gl_FragColor = texture2D(tileTextures, textureCoord);
+						}
+						else
+						{
+							float textureIndex = 1.0;
+							offsetZeroToOne = (mod(rayPosition + rayDirection * depth, voxelSize) / voxelSize).xy;
+							vec2 textureCoord = offsetZeroToOne * vec2(0.125, 0.125) + vec2(0.125 * mod(textureIndex, 3.0), 0.125 * floor(textureIndex / 3.0));
+							gl_FragColor = texture2D(tileTextures, textureCoord);
+						}
+					}
+					break;
+				}
+			}
+		}
+		else
+		{
+			gl_FragColor = vec4(1, 0, 1, 1);
+		}
+	}
+</script>
+
+<script type="text/javascript">
+//Input
+var moveUp = false;
+var moveDown = false;
+var moveLeft = false;
+var moveRight = false;
+
+var canvas;
+var gl;
+var shaderProgram;
+var quadVertexPositionBuffer;
+var quadVertexTextureCoordBuffer;
+
+var glVertexAttribute;
+var glTextureCoordAttribute;
+
+
+var orthoProjection;
+
+var tileTextures;
+
+var angleX = 0;
+var angleY = 0;
+var mouseX = 320;
+var mouseY = 240;
+
+var positionX = 5.0;
+var positionY = 5.0;
+var positionZ = 5.0;
+
+var focus = false;
+
+var focalLength = 0.2;
+
+var fps = 0;
+var update = 0;
+
+var depthmap = false;
+
+function OrthographicProjection(left, right, bottom, top, znear, zfar)
+{
+	var tx = -(right + left) / (right - left);
+	var ty = -(top + bottom) / (top - bottom);
+	var tz = -(zfar + znear) / (zfar - znear);
+
+	return [2 / (right - left), 0, 0, tx,
+	        0, 2 / (top - bottom), 0, ty,
+	        0, 0, -2 / (zfar - znear), tz,
+	        0, 0, 0, 1];
+}
+
+function MatrixMultiply(a, b)
+{
+	return [a[0] * b[0] + a[1] * b[3] + a[2] * b[6],
+	        a[0] * b[1] + a[1] * b[4] + a[2] * b[7],
+	        a[0] * b[2] + a[1] * b[5] + a[2] * b[8],
+	        a[3] * b[0] + a[4] * b[3] + a[5] * b[6],
+	        a[3] * b[1] + a[4] * b[4] + a[5] * b[7],
+	        a[3] * b[2] + a[4] * b[5] + a[5] * b[8],
+	        a[6] * b[0] + a[7] * b[3] + a[8] * b[6],
+	        a[6] * b[1] + a[7] * b[4] + a[8] * b[7],
+	        a[6] * b[2] + a[7] * b[5] + a[8] * b[8]];
+}
+
+function MatrixVectorMultiply(a, v)
+{
+	return [a[0] * v[0] + a[1] * v[1] + a[2] * v[2],
+	        a[3] * v[0] + a[4] * v[1] + a[5] * v[2],
+	        a[6] * v[0] + a[7] * v[1] + a[8] * v[2]];
+}
+
+function GetShader(gl, id)
+{
+	var shaderScript = document.getElementById(id);
+	if (!shaderScript)
+	{
+		return null;
+	}
+
+	var str = "";
+	var k = shaderScript.firstChild;
+	while (k)
+	{
+		if (k.nodeType == 3)
+		{
+			str += k.textContent;
+		}
+		k = k.nextSibling;
+	}
+
+	var shader;
+	if (shaderScript.type == "x-shader/x-fragment")
+	{
+		shader = gl.createShader(gl.FRAGMENT_SHADER);
+	}
+	else if (shaderScript.type == "x-shader/x-vertex")
+	{
+		shader = gl.createShader(gl.VERTEX_SHADER);
+	}
+	else
+	{
+		return null;
+	}
+
+	gl.shaderSource(shader, str);
+	gl.compileShader(shader);
+
+	if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS))
+	{
+		alert(gl.getShaderInfoLog(shader));
+		return null;
+	}
+
+	return shader;
+}
+
+$(document).ready(function()
+{
+	canvas = document.getElementById("webglcanvas");
+	try
+	{
+		gl = canvas.getContext("experimental-webgl");
+	}
+	catch(e)
+	{
+    	}
+	if (!gl)
+	{
+		alert("Failed to initilize WebGL");
+		return;
+	}
+
+	gl.clearColor(0.0, 0.0, 0.0, 1.0);
+	gl.clearDepth(1.0);
+	gl.enable(gl.DEPTH_TEST);
+	gl.depthFunc(gl.LEQUAL);
+
+	var fragmentShader = GetShader(gl, "vshader");
+	var vertexShader = GetShader(gl, "fshader");
+
+	shaderProgram = gl.createProgram();
+	gl.attachShader(shaderProgram, vertexShader);
+	gl.attachShader(shaderProgram, fragmentShader);
+	gl.linkProgram(shaderProgram);
+	
+	if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS))
+	{
+		alert("Could not initialise shaders");
+	}
+	
+	gl.useProgram(shaderProgram);
+
+	glVertexAttribute = gl.getAttribLocation(shaderProgram, "aVertexPosition");
+	gl.enableVertexAttribArray(glVertexAttribute);
+
+	glTextureCoordAttribute = gl.getAttribLocation(shaderProgram, "aTextureCoord");
+	gl.enableVertexAttribArray(glTextureCoordAttribute);
+
+	orthoProjection = OrthographicProjection(0, canvas.width, canvas.height, 0, -1, 1);
+
+	// Create the fullscreen quad that we'll run the shader on
+	var vertices = [-320.0, -240.0, 0.0,
+	                320.0, -240.0, 0.0,
+	                320.0, 240.0, 0.0,
+	                -320.0, 240.0, 0.0];
+	quadVertexPositionBuffer = gl.createBuffer();
+	gl.bindBuffer(gl.ARRAY_BUFFER, quadVertexPositionBuffer);
+	gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+
+	var textureCoords = [0.0, 0.0,
+	                     640.0, 0.0,
+	                     640.0, 480.0,
+	                     0.0, 480.0];
+	quadVertexTextureCoordBuffer = gl.createBuffer();
+	gl.bindBuffer(gl.ARRAY_BUFFER, quadVertexTextureCoordBuffer);
+	gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(textureCoords), gl.STATIC_DRAW);
+
+
+	tileTextures = gl.createTexture();
+	tileTextures.image = new Image();
+	tileTextures.image.onload = function()
+	{
+		gl.bindTexture(gl.TEXTURE_2D, tileTextures);
+		gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+		gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, tileTextures.image);
+		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+		gl.bindTexture(gl.TEXTURE_2D, null);
+	}
+	tileTextures.image.src = "tiles.png";
+
+	$(document).keydown(KeyDown);
+	$(document).keyup(KeyUp);
+	$(document).focus(Focus);
+	$(document).blur(LostFocus);
+	$(document).scroll(MouseWheel);
+	$("#canvas").mousemove(MouseMove);
+
+	// Render only once
+	//setInterval(Update, 30);
+	setInterval(Render, 17); // 33 for 30 fps
+	//setInterval(FPSUpdate, 1000);
+});
+
+function Render()
+{
+	gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+	gl.bindBuffer(gl.ARRAY_BUFFER, quadVertexPositionBuffer);
+	gl.vertexAttribPointer(glVertexAttribute, 3, gl.FLOAT, false, 0, 0);
+
+	gl.bindBuffer(gl.ARRAY_BUFFER, quadVertexTextureCoordBuffer);
+	gl.vertexAttribPointer(glTextureCoordAttribute, 2, gl.FLOAT, false, 0, 0);
+
+	var pUniform = gl.getUniformLocation(shaderProgram, "uPMatrix");
+	gl.uniformMatrix4fv(pUniform, true, new Float32Array(orthoProjection));
+
+	var mvUniform = gl.getUniformLocation(shaderProgram, "uMVMatrix");
+	gl.uniformMatrix4fv(mvUniform, true, new Float32Array([1,0,0,320,
+	                                                          0,1,0,240,
+	                                                          0,0,1,0,
+	                                                          0,0,0,1]));
+
+	gl.activeTexture(gl.TEXTURE0);
+	gl.bindTexture(gl.TEXTURE_2D, tileTextures);
+	var samplerUniform = gl.getUniformLocation(shaderProgram, "tileTextures");
+	gl.uniform1i(samplerUniform, 0);
+
+	var cameraRotation = gl.getUniformLocation(shaderProgram, "cameraRotation");
+
+	var angleResolution = Math.PI / 180 * 0.1;
+	var angleXt = Math.round(angleX / angleResolution) * angleResolution;
+	var angleYt = Math.round(angleY / angleResolution) * angleResolution;
+	var rotationMatrix = MatrixMultiply([Math.cos(angleXt), -Math.sin(angleXt), 0,
+	                                     Math.sin(angleXt), Math.cos(angleXt), 0,
+	                                     0, 0, 1],
+	                                     [Math.cos(angleYt), 0, Math.sin(angleYt),
+	                                      0, 1, 0,
+	                                      -Math.sin(angleYt), 0, Math.cos(angleYt)]);
+
+	gl.uniformMatrix3fv(cameraRotation, true, new Float32Array(rotationMatrix));
+
+	var cameraCenter = gl.getUniformLocation(shaderProgram, "cameraCenter");
+	gl.uniform3f(cameraCenter, positionX, positionY, positionZ);
+
+	var focalDistance = gl.getUniformLocation(shaderProgram, "focalDistance");
+	gl.uniform1f(focalDistance, focalLength);
+
+	var voxelSize = gl.getUniformLocation(shaderProgram, "voxelSize");
+	gl.uniform1f(voxelSize, 1.0);
+
+	var atlasTextureSize = gl.getUniformLocation(shaderProgram, "atlasTextureSize");
+	gl.uniform2f(atlasTextureSize, 100.0, 100.0);
+
+	var textureSize = gl.getUniformLocation(shaderProgram, "textureSize");
+	gl.uniform2f(textureSize, 32.0, 32.0);
+
+	var textureSize = gl.getUniformLocation(shaderProgram, "textureColumnsRows");
+	gl.uniform2f(textureSize, 3.0, 3.0);
+
+	var depthMap = gl.getUniformLocation(shaderProgram, "depthmap");
+	gl.uniform1f(depthMap, depthmap ? 1.0 : 0.0);
+
+	gl.drawArrays(gl.TRIANGLE_FAN, 0, 4); // 4 vertices
+	fps++;
+}
+
+
+function Update()
+{
+	if (focus)
+	{
+	var rotationZ = [Math.cos(angleX), -Math.sin(angleX), 0,
+	                 Math.sin(angleX), Math.cos(angleX), 0,
+	                 0, 0, 1];
+	var velocity = MatrixVectorMultiply(rotationZ, [(moveUp ? 1 : 0) - (moveDown ? 1 : 0), 0, 0]);
+	positionX += velocity[0] * 0.1;
+	positionY += velocity[1] * 0.1;
+
+	var velocity = MatrixVectorMultiply(rotationZ, [0, (moveLeft ? 1 : 0) - (moveRight ? 1 : 0), 0]);
+	positionX += velocity[0] * 0.1;
+	positionY += velocity[1] * 0.1;
+
+	if (positionX < 1.2) positionX = 1.2;
+	if (positionY < 1.2) positionY = 1.2;
+	if (positionZ < 1.2) positionZ = 1.2;
+
+	positionZ = 2.5;
+
+	var mouseDifference = new Vector((mouseX - 320.0) / 640.0, (mouseY - 240.0) / 480.0);
+	//if (mouseDifference.Length() > 0.03)
+	//{
+		angleX -= mouseDifference.X * 0.1 * 1.0 / focalLength;
+		angleX %= Math.PI * 2;
+		angleY += mouseDifference.Y * 0.1 * 1.0 / focalLength;
+		if (angleY < -Math.PI / 2) angleY = -Math.PI / 2;
+		if (angleY > Math.PI / 2) angleY = Math.PI / 2;
+	//}
+
+	// Update the debug info
+	document.getElementById("angleX").innerHTML = "Angle X: " + angleX;
+	document.getElementById("angleY").innerHTML = "Angle Y: " + angleY;
+	document.getElementById("mouseX").innerHTML = "Mouse X: " + mouseX;
+	document.getElementById("mouseY").innerHTML = "Mouse Y: " + mouseY;
+	document.getElementById("focalDistance").innerHTML = "Focal Distance: " + focalLength;
+	//player.velocity.x = (moveRight ? 1 : 0) - (moveLeft ? 1 : 0);
+	//player.velocity.y = (moveDown ? 1 : 0) - (moveUp ? 1 : 0);
+	//player.velocity.Normalize();
+	}
+	update++;
+}
+
+function FPSUpdate()
+{
+	document.getElementById("fps").innerHTML = "FPS: " + fps + "/60";
+	fps = 0;
+	document.getElementById("update").innerHTML = "Update: " + update + "/30";
+	update = 0;
+
+}
+
+function MouseMove(e)
+{
+	mouseX = e.clientX - canvas.offsetTop;
+	mouseY = e.clientY - canvas.offsetLeft;
+	if (mouseX < 0) mouseX = 0;
+	if (mouseY < 0) mouseY = 0;
+	if (mouseX > 640) mouseX = 640;
+	if (mouseY > 480) mouseY = 480;
+}
+
+function KeyDown(e)
+{
+	switch(window.event ? e.keyCode : e.which)
+	{
+		case 38: // Up Arrow
+		case 87: // W
+			moveUp = true;
+			break;
+		case 40: // Down Arrow
+		case 83: // S
+			moveDown = true;
+			break;
+		case 37: // Left Arrow
+		case 65: // A
+			moveLeft = true;
+			break;
+		case 39: // Right Arrow
+		case 68: // D
+			moveRight = true;
+			break;
+		case 27:
+			focus = false;
+			break;
+		case 32:
+			depthmap = true;
+			break;
+	}
+}
+
+function KeyUp(e)
+{
+	switch(window.event ? e.keyCode : e.which)
+	{
+		case 38: // Up Arrow
+		case 87: // W
+			moveUp = false;
+			break;
+		case 40: // Down Arrow
+		case 83: // S
+			moveDown = false;
+			break;
+		case 37: // Left Arrow
+		case 65: // A
+			moveLeft = false;
+			break;
+		case 39: // Right Arrow
+		case 68: // D
+			moveRight = false;
+			break;
+		case 32:
+			depthmap = false;
+			break;
+	}
+}
+
+function Focus(event)
+{
+	focus = true;
+}
+
+function LostFocus(event)
+{
+	focus = false;
+	mouseX = 320;
+	mouseY = 240;
+}
+
+function MouseWheel(event)
+{
+	var delta = -event.detail / 3;
+	focalLength += delta * 0.05;
+	if (focalLength < 0.1) focalLength = 0.1;
+	if (focalLength > 2.0) focalLength = 2.0;
+}
+
+</script>
+</head>
+<body>
+	<canvas id="webglcanvas" width="640" height="480">
+		<h1>Canvas is not supported in this browser.</h1>
+	</canvas>
+	</br>
+	<div id="fps"></div>
+	<div id="update"></div>
+	<div id="mouseX"></div>
+	<div id="mouseY"></div>
+	<div id="angleX"></div>
+	<div id="angleY"></div>
+	<div id="focalDistance"></div>
+</body>
+</html>
